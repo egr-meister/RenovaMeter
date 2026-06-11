@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "RenovaMeter",
+    "slug": "renovameter",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#F5F7FA"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.renovameter.app",
+      "versionCode": 1
+    }
+  }
+}

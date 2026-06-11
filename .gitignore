@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# Native build artifacts
+*.apk
+*.aab
+android/app/build/
+android/build/
+android/.gradle/
+ios/build/
+
+# Keystore and signing secrets (never commit these)
+*.keystore
+android/keystore.properties
+
+# Environment
+.env
+.env.local
+
+# macOS / Editor
+.DS_Store
+*.log

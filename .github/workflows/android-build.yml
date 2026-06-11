@@ -1,0 +1,92 @@
+name: Android Build
+
+# Build a signed release APK and AAB for RenovaMeter.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build APK and AAB
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Install Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # 3. Install JDK 17 (required by the Android Gradle Plugin)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # 4. Set up the Android SDK
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # 5. Install project dependencies
+      - name: Install dependencies
+        run: npm install
+
+      # 6. Generate the native Android project with Expo prebuild
+      - name: Prepare Android build (expo prebuild)
+        run: npx expo prebuild --platform android --no-install
+
+      # 7. Decode the keystore from a GitHub Secret
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/renovameter-release-key.keystore
+
+      # 8. Create keystore.properties consumed by build.gradle
+      - name: Create keystore.properties
+        run: |
+          cat > android/keystore.properties <<EOF
+          storeFile=renovameter-release-key.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
+      # 9. Make gradlew executable
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+
+      # 10. Build the release APK
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon
+
+      # 11. Build the release AAB
+      - name: Build release AAB
+        working-directory: android
+        run: ./gradlew bundleRelease --no-daemon
+
+      # 12. Rename outputs to predictable names
+      - name: Rename artifacts
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk renovameter-release.apk
+          cp android/app/build/outputs/bundle/release/app-release.aab renovameter-release.aab
+
+      # 13. Upload the APK artifact
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: renovameter-release-apk
+          path: renovameter-release.apk
+
+      # 14. Upload the AAB artifact
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: renovameter-release-aab
+          path: renovameter-release.aab
