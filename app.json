@@ -5,7 +5,10 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./icon.png",
     "splash": {
+      "image": "./icon.png",
+      "resizeMode": "contain",
       "backgroundColor": "#F5F7FA"
     },
     "assetBundlePatterns": [
@@ -16,7 +19,11 @@
     },
     "android": {
       "package": "com.renovameter.app",
-      "versionCode": 1
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./adaptive-icon.png",
+        "backgroundColor": "#2C6499"
+      }
     }
   }
 }
