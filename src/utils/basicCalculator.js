@@ -87,18 +87,55 @@ export function inputDecimal(state) {
   return { ...state, display: state.display + '.', error: null };
 }
 
-// Choose the single operator for this calculation.
+// Choose the operator for the next operation.
+// Still ONE operation at a time: if an operation is already pending and a
+// second operand has been entered, it is evaluated first (left-to-right),
+// and the running result becomes the first operand of the new operation.
 export function chooseOperator(state, operator) {
   if (OPERATORS.indexOf(operator) === -1) {
     return state;
   }
 
-  // After '=' allow chaining the result into a new operation.
-  const baseDisplay = state.error ? '0' : state.display;
+  // Recover from an error state by starting fresh from 0.
+  if (state.error) {
+    return {
+      ...createInitialCalcState(),
+      operand1: '0',
+      operator: operator,
+      waitingForSecond: true,
+    };
+  }
 
+  // A complete pending operation (operator set, second operand typed) is
+  // evaluated before applying the new operator. This makes sequences like
+  // "2 + 3 + 4 =" produce 9 instead of discarding the running total.
+  if (
+    state.operator &&
+    state.operand1 !== null &&
+    !state.waitingForSecond &&
+    !state.justEvaluated
+  ) {
+    const evaluated = calculateResult(state);
+    if (evaluated.error) {
+      return evaluated; // e.g. division by zero
+    }
+    return {
+      display: evaluated.display,
+      operand1: evaluated.display,
+      operator: operator,
+      waitingForSecond: true,
+      justEvaluated: false,
+      error: null,
+    };
+  }
+
+  // Otherwise use the current value as the first operand. This also covers:
+  //  - choosing the first operator,
+  //  - changing the operator right after pressing one ("8 + ×" -> uses ×),
+  //  - chaining from a result produced by "=" (operand1 = that result).
   return {
-    display: baseDisplay,
-    operand1: baseDisplay,
+    display: state.display,
+    operand1: state.display,
     operator: operator,
     waitingForSecond: true,
     justEvaluated: false,
@@ -132,12 +169,16 @@ export function deleteLast(state) {
 
 // Evaluate the single stored operation.
 export function calculateResult(state) {
-  // Nothing to do if no operator was chosen.
+  // No pending operation (a lone number, or pressing "=" again on a result):
+  // the current value simply stands as the result. No error.
   if (!state.operator || state.operand1 === null) {
     return {
       ...state,
-      error: 'Enter a valid calculation.',
-      display: state.display,
+      operand1: null,
+      operator: null,
+      waitingForSecond: false,
+      justEvaluated: true,
+      error: null,
     };
   }
 
