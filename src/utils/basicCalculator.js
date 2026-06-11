@@ -1,247 +1,348 @@
-// Simple, predictable calculator that supports ONLY ONE operation at a time.
-// No expression parsing and no eval. State is a plain object.
+// Expression calculator with correct operator precedence (× and ÷ before + and −).
+// No eval and no external parser — a tiny tokenizer + two-pass evaluator.
 //
 // State shape:
 // {
-//   display: string,        // what the user currently sees / is typing
-//   operand1: string|null,  // stored first operand (as a string) once an operator is chosen
-//   operator: string|null,  // '+', '-', '×' or '÷'
-//   waitingForSecond: bool, // true right after an operator is chosen
-//   justEvaluated: bool,    // true right after '=' so the next digit starts fresh
-//   error: string|null,     // error message, if any
+//   tokens: string[],   // finalized expression parts: numbers and operators,
+//                        //   e.g. ['2','+','2','×']  (current number not included)
+//   current: string,    // the number being typed now; '' means "waiting" after an operator
+//   display: string,    // big display value
+//   expression: string, // small line: the full expression being built / evaluated
+//   justEvaluated: bool, // true right after '=' so the next digit starts fresh
+//   error: string|null,
 // }
 
 const OPERATORS = ['+', '-', '×', '÷'];
 
+function isOp(t) {
+  return OPERATORS.indexOf(t) !== -1;
+}
+
+// Build the human-readable expression line from tokens (+ optional current number).
+function formatExpression(tokens, current) {
+  const parts = tokens.slice();
+  if (current !== '' && current != null) {
+    parts.push(current);
+  }
+  let s = '';
+  for (let i = 0; i < parts.length; i++) {
+    const t = parts[i];
+    s += isOp(t) ? ' ' + t + ' ' : t;
+  }
+  return s.trim();
+}
+
+// The big display: the current number, or the most recent number if waiting.
+function bigDisplay(tokens, current) {
+  if (current !== '' && current != null) {
+    return current;
+  }
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    if (!isOp(tokens[i])) {
+      return tokens[i];
+    }
+  }
+  return '0';
+}
+
+// Evaluate a flat token list [num, op, num, op, num, ...] with precedence.
+function evalTokens(tokens) {
+  if (tokens.length === 0 || tokens.length % 2 === 0) {
+    return { ok: false, error: 'Enter a valid calculation.' };
+  }
+  const first = Number(tokens[0]);
+  if (!isFinite(first)) {
+    return { ok: false, error: 'Enter a valid calculation.' };
+  }
+  // First pass: resolve × and ÷ immediately; collect + and − for the second pass.
+  const nums = [first];
+  const addOps = [];
+  for (let i = 1; i < tokens.length; i += 2) {
+    const op = tokens[i];
+    const n = Number(tokens[i + 1]);
+    if (!isFinite(n)) {
+      return { ok: false, error: 'Enter a valid calculation.' };
+    }
+    if (op === '×') {
+      nums[nums.length - 1] = nums[nums.length - 1] * n;
+    } else if (op === '÷') {
+      if (n === 0) {
+        return { ok: false, error: 'Cannot divide by zero.' };
+      }
+      nums[nums.length - 1] = nums[nums.length - 1] / n;
+    } else if (op === '+') {
+      nums.push(n);
+      addOps.push('+');
+    } else if (op === '-') {
+      nums.push(n);
+      addOps.push('-');
+    } else {
+      return { ok: false, error: 'Enter a valid calculation.' };
+    }
+  }
+  // Second pass: left-to-right addition and subtraction.
+  let result = nums[0];
+  for (let j = 0; j < addOps.length; j++) {
+    result = addOps[j] === '+' ? result + nums[j + 1] : result - nums[j + 1];
+  }
+  if (!isFinite(result)) {
+    return { ok: false, error: 'Enter a valid calculation.' };
+  }
+  return { ok: true, value: result };
+}
+
 export function createInitialCalcState() {
   return {
+    tokens: [],
+    current: '0',
     display: '0',
-    operand1: null,
-    operator: null,
-    waitingForSecond: false,
+    expression: '',
     justEvaluated: false,
     error: null,
   };
 }
 
-// Clear everything back to the initial state.
 export function clearCalculator() {
   return createInitialCalcState();
 }
 
-// Append a single digit (0-9) to the current entry.
+// Append a digit (0-9).
 export function inputDigit(state, digit) {
   const d = String(digit);
   if (!/^[0-9]$/.test(d)) {
     return state;
   }
 
-  // Starting a fresh calculation after an error or after pressing '='.
+  // After an error or after '=', a digit starts a brand-new calculation.
   if (state.error || state.justEvaluated) {
     return {
-      ...createInitialCalcState(),
+      tokens: [],
+      current: d,
       display: d,
-    };
-  }
-
-  // First digit of the second operand.
-  if (state.waitingForSecond) {
-    return {
-      ...state,
-      display: d,
-      waitingForSecond: false,
-      error: null,
-    };
-  }
-
-  // Replace a lone leading zero, otherwise append.
-  const next = state.display === '0' ? d : state.display + d;
-  // Guard against runaway length.
-  if (next.replace(/[^0-9]/g, '').length > 12) {
-    return state;
-  }
-  return { ...state, display: next, error: null };
-}
-
-// Add a decimal point to the current entry (only one allowed).
-export function inputDecimal(state) {
-  if (state.error || state.justEvaluated) {
-    return {
-      ...createInitialCalcState(),
-      display: '0.',
-    };
-  }
-
-  if (state.waitingForSecond) {
-    return {
-      ...state,
-      display: '0.',
-      waitingForSecond: false,
-      error: null,
-    };
-  }
-
-  if (state.display.indexOf('.') !== -1) {
-    return state; // already has a decimal point
-  }
-  return { ...state, display: state.display + '.', error: null };
-}
-
-// Choose the operator for the next operation.
-// Still ONE operation at a time: if an operation is already pending and a
-// second operand has been entered, it is evaluated first (left-to-right),
-// and the running result becomes the first operand of the new operation.
-export function chooseOperator(state, operator) {
-  if (OPERATORS.indexOf(operator) === -1) {
-    return state;
-  }
-
-  // Recover from an error state by starting fresh from 0.
-  if (state.error) {
-    return {
-      ...createInitialCalcState(),
-      operand1: '0',
-      operator: operator,
-      waitingForSecond: true,
-    };
-  }
-
-  // A complete pending operation (operator set, second operand typed) is
-  // evaluated before applying the new operator. This makes sequences like
-  // "2 + 3 + 4 =" produce 9 instead of discarding the running total.
-  if (
-    state.operator &&
-    state.operand1 !== null &&
-    !state.waitingForSecond &&
-    !state.justEvaluated
-  ) {
-    const evaluated = calculateResult(state);
-    if (evaluated.error) {
-      return evaluated; // e.g. division by zero
-    }
-    return {
-      display: evaluated.display,
-      operand1: evaluated.display,
-      operator: operator,
-      waitingForSecond: true,
+      expression: d,
       justEvaluated: false,
       error: null,
     };
   }
 
-  // Otherwise use the current value as the first operand. This also covers:
-  //  - choosing the first operator,
-  //  - changing the operator right after pressing one ("8 + ×" -> uses ×),
-  //  - chaining from a result produced by "=" (operand1 = that result).
+  let current = state.current;
+  if (current === '' || current === '0') {
+    current = d; // first digit after an operator, or replace a lone leading zero
+  } else {
+    // Cap the length of a single number to keep things predictable.
+    if (current.replace('-', '').replace('.', '').length >= 12) {
+      return state;
+    }
+    current = current + d;
+  }
+
   return {
-    display: state.display,
-    operand1: state.display,
-    operator: operator,
-    waitingForSecond: true,
+    tokens: state.tokens,
+    current,
+    display: current,
+    expression: formatExpression(state.tokens, current),
     justEvaluated: false,
     error: null,
   };
 }
 
-// Remove the last character of the current entry (backspace).
+// Add a decimal point (only one per number).
+export function inputDecimal(state) {
+  if (state.error || state.justEvaluated) {
+    return {
+      tokens: [],
+      current: '0.',
+      display: '0.',
+      expression: '0.',
+      justEvaluated: false,
+      error: null,
+    };
+  }
+
+  let current = state.current;
+  if (current === '') {
+    current = '0.';
+  } else if (current.indexOf('.') !== -1) {
+    return state; // already has a decimal point
+  } else {
+    current = current + '.';
+  }
+
+  return {
+    tokens: state.tokens,
+    current,
+    display: current,
+    expression: formatExpression(state.tokens, current),
+    justEvaluated: false,
+    error: null,
+  };
+}
+
+// Append an operator. Operators are NOT evaluated here — the whole expression
+// is evaluated on '=', so precedence is respected (2 + 2 × 3 = 8).
+export function chooseOperator(state, operator) {
+  if (OPERATORS.indexOf(operator) === -1) {
+    return state;
+  }
+
+  // Recover from an error: start a fresh expression from 0.
+  if (state.error) {
+    const tokens = ['0', operator];
+    return {
+      tokens,
+      current: '',
+      display: '0',
+      expression: formatExpression(tokens, ''),
+      justEvaluated: false,
+      error: null,
+    };
+  }
+
+  // After '=', continue the next expression from the previous result.
+  if (state.justEvaluated) {
+    const tokens = [state.current, operator];
+    return {
+      tokens,
+      current: '',
+      display: state.current,
+      expression: formatExpression(tokens, ''),
+      justEvaluated: false,
+      error: null,
+    };
+  }
+
+  let tokens = state.tokens.slice();
+  const current = state.current;
+
+  if (current === '') {
+    // Waiting after an operator: pressing another operator replaces it.
+    if (tokens.length > 0 && isOp(tokens[tokens.length - 1])) {
+      tokens[tokens.length - 1] = operator;
+    } else if (tokens.length === 0) {
+      tokens = ['0', operator];
+    } else {
+      tokens.push(operator);
+    }
+  } else {
+    // Commit the typed number, then the operator.
+    tokens.push(current);
+    tokens.push(operator);
+  }
+
+  return {
+    tokens,
+    current: '',
+    display: bigDisplay(tokens, ''),
+    expression: formatExpression(tokens, ''),
+    justEvaluated: false,
+    error: null,
+  };
+}
+
+// Backspace: remove the last digit, or step back over a trailing operator.
 export function deleteLast(state) {
   if (state.error) {
     return createInitialCalcState();
   }
 
-  // Do not delete into a stored operand; just reset the pending second entry.
-  if (state.waitingForSecond) {
-    return state;
-  }
-
   if (state.justEvaluated) {
-    // Backspace after a result behaves like starting over from that result.
-    const trimmed = state.display.length > 1 ? state.display.slice(0, -1) : '0';
+    // Edit the result as a starting number.
+    let cur = state.current.length > 1 ? state.current.slice(0, -1) : '0';
+    if (cur === '' || cur === '-') {
+      cur = '0';
+    }
     return {
-      ...createInitialCalcState(),
-      display: trimmed === '' || trimmed === '-' ? '0' : trimmed,
+      tokens: [],
+      current: cur,
+      display: cur,
+      expression: cur === '0' ? '' : cur,
+      justEvaluated: false,
+      error: null,
     };
   }
 
-  const next = state.display.length > 1 ? state.display.slice(0, -1) : '0';
-  return { ...state, display: next === '' ? '0' : next };
+  const tokens = state.tokens.slice();
+  let current = state.current;
+
+  if (current !== '') {
+    current = current.length > 1 ? current.slice(0, -1) : '0';
+    return {
+      tokens,
+      current,
+      display: current,
+      expression: formatExpression(tokens, current),
+      justEvaluated: false,
+      error: null,
+    };
+  }
+
+  // current === '' : remove the trailing operator and bring the previous number
+  // back so it can be edited.
+  if (tokens.length > 0 && isOp(tokens[tokens.length - 1])) {
+    tokens.pop(); // remove operator
+    if (tokens.length > 0) {
+      current = tokens.pop(); // bring the number back into editing
+    } else {
+      current = '0';
+    }
+    return {
+      tokens,
+      current,
+      display: current,
+      expression: formatExpression(tokens, current),
+      justEvaluated: false,
+      error: null,
+    };
+  }
+
+  return state;
 }
 
-// Evaluate the single stored operation.
+// Evaluate the whole expression with correct precedence.
 export function calculateResult(state) {
-  // No pending operation (a lone number, or pressing "=" again on a result):
-  // the current value simply stands as the result. No error.
-  if (!state.operator || state.operand1 === null) {
+  if (state.error) {
+    return state;
+  }
+
+  const tokens = state.tokens.slice();
+  if (state.current !== '') {
+    tokens.push(state.current);
+  }
+  // Drop any trailing operators (e.g. "2 + =" -> evaluate "2").
+  while (tokens.length > 0 && isOp(tokens[tokens.length - 1])) {
+    tokens.pop();
+  }
+
+  if (tokens.length === 0) {
+    return { ...createInitialCalcState(), error: 'Enter a valid calculation.' };
+  }
+
+  // A single number with no operation simply stands as the result.
+  if (tokens.length === 1) {
+    const v = tokens[0];
     return {
-      ...state,
-      operand1: null,
-      operator: null,
-      waitingForSecond: false,
+      tokens: [],
+      current: v,
+      display: v,
+      expression: '',
       justEvaluated: true,
       error: null,
     };
   }
 
-  // Operator chosen but no second operand entered yet.
-  if (state.waitingForSecond) {
-    return {
-      ...createInitialCalcState(),
-      error: 'Enter a valid calculation.',
-    };
+  const res = evalTokens(tokens);
+  if (!res.ok) {
+    return { ...createInitialCalcState(), error: res.error };
   }
 
-  const a = Number(state.operand1);
-  const b = Number(state.display);
-
-  if (!isFinite(a) || !isFinite(b)) {
-    return {
-      ...createInitialCalcState(),
-      error: 'Enter a valid calculation.',
-    };
-  }
-
-  let result;
-  switch (state.operator) {
-    case '+':
-      result = a + b;
-      break;
-    case '-':
-      result = a - b;
-      break;
-    case '×':
-      result = a * b;
-      break;
-    case '÷':
-      if (b === 0) {
-        return {
-          ...createInitialCalcState(),
-          error: 'Cannot divide by zero.',
-        };
-      }
-      result = a / b;
-      break;
-    default:
-      return {
-        ...createInitialCalcState(),
-        error: 'Enter a valid calculation.',
-      };
-  }
-
-  if (!isFinite(result)) {
-    return {
-      ...createInitialCalcState(),
-      error: 'Enter a valid calculation.',
-    };
-  }
-
-  // Limit floating point noise to a clean, readable number.
-  const rounded = Math.round((result + Number.EPSILON) * 1e8) / 1e8;
+  // Trim floating-point noise to a clean, readable number.
+  const rounded = Math.round((res.value + Number.EPSILON) * 1e8) / 1e8;
 
   return {
+    tokens: [],
+    current: String(rounded),
     display: String(rounded),
-    operand1: null,
-    operator: null,
-    waitingForSecond: false,
+    expression: formatExpression(tokens, '') + ' =',
     justEvaluated: true,
     error: null,
   };
