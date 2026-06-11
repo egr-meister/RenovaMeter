@@ -15,11 +15,9 @@ import {
 export default function BasicCalculatorScreen() {
   const [state, setState] = useState(createInitialCalcState());
 
-  // Build the line that shows the pending operation, e.g. "12 ×".
+  // Show the full expression being built / evaluated, e.g. "2 + 2 × 3".
   const expressionLine =
-    state.operator && state.operand1 !== null
-      ? `${state.operand1} ${state.operator}`
-      : ' ';
+    state.expression && state.expression.length > 0 ? state.expression : ' ';
 
   const mainDisplay = state.error ? '0' : state.display;
 
