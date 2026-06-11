@@ -16,12 +16,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Install Node.js
+      # 2. Install Node.js (no npm cache: this project has no package-lock.json)
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       # 3. Install JDK 17 (required by the Android Gradle Plugin)
       - name: Set up JDK 17
@@ -38,24 +37,36 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 6. Generate the native Android project with Expo prebuild
+      # 6. Generate a clean native Android project with Expo prebuild
       - name: Prepare Android build (expo prebuild)
-        run: npx expo prebuild --platform android --no-install
+        run: npx expo prebuild --platform android --clean --no-install
 
-      # 7. Decode the keystore from a GitHub Secret
-      - name: Decode keystore
+      # 7. Configure release signing from GitHub Secrets.
+      #    If no secrets are set, the release falls back to debug signing
+      #    so the build still succeeds.
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/renovameter-release-key.keystore
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/renovameter-release-key.keystore
+            {
+              echo "storeFile=renovameter-release-key.keystore"
+              echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+              echo "keyAlias=$ANDROID_KEY_ALIAS"
+              echo "keyPassword=$ANDROID_KEY_PASSWORD"
+            } > android/keystore.properties
+            echo "Release signing configured from secrets."
+          else
+            echo "No signing secrets found - release will be debug-signed."
+          fi
 
-      # 8. Create keystore.properties consumed by build.gradle
-      - name: Create keystore.properties
-        run: |
-          cat > android/keystore.properties <<EOF
-          storeFile=renovameter-release-key.keystore
-          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
-          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
-          EOF
+      # 8. Inject the signing config and enable production optimization
+      - name: Apply Android CI setup
+        run: bash android-ci-setup.sh
 
       # 9. Make gradlew executable
       - name: Grant execute permission for gradlew
@@ -64,12 +75,12 @@ jobs:
       # 10. Build the release APK
       - name: Build release APK
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       # 11. Build the release AAB
       - name: Build release AAB
         working-directory: android
-        run: ./gradlew bundleRelease --no-daemon
+        run: ./gradlew bundleRelease --no-daemon --stacktrace
 
       # 12. Rename outputs to predictable names
       - name: Rename artifacts
