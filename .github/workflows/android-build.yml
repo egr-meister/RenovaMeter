@@ -37,6 +37,10 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # 5b. Align Expo-managed package versions with the installed SDK
+      - name: Align dependency versions
+        run: npx expo install --fix
+
       # 6. Generate a clean native Android project with Expo prebuild
       - name: Prepare Android build (expo prebuild)
         run: npx expo prebuild --platform android --clean --no-install
