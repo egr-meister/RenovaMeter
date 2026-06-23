@@ -1,13 +1,13 @@
 name: Diagnose Crash
 
-# Boots an Android emulator, installs the release APK, launches it, and captures
-# the crash stack trace from logcat. Run manually from the Actions tab.
+# Builds the release APK and checks whether its arm64 native libraries are
+# 16 KB page aligned (the likely cause of the on-device crash). Run manually.
 on:
   workflow_dispatch:
 
 jobs:
   diagnose:
-    name: Capture crash logcat
+    name: Check native lib alignment
     runs-on: ubuntu-latest
 
     steps:
@@ -37,9 +37,6 @@ jobs:
       - name: Prepare Android build (expo prebuild)
         run: npx expo prebuild --platform android --clean --no-install
 
-      # Reproduce the exact release config (minify + optimization) used by the
-      # release workflow, so the crash is the same. No signing secrets here, so
-      # the release APK is debug-signed (installable on the emulator).
       - name: Apply Android CI setup
         run: bash android-ci-setup.sh
 
@@ -50,33 +47,27 @@ jobs:
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon
 
-      - name: Enable KVM
+      - name: Check 16 KB alignment of arm64 native libraries
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Run app on emulator and capture logcat
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 34
-          arch: x86_64
-          target: google_apis
-          profile: pixel_6
-          disable-animations: true
-          script: |
-            adb logcat -c || true
-            adb install -r android/app/build/outputs/apk/release/app-release.apk
-            adb shell monkey -p com.renovameter.app -c android.intent.category.LAUNCHER 1 || true
-            sleep 25
-            adb logcat -d > full-logcat.txt || true
-            echo "==================== CRASH EXCERPT ===================="
-            grep -iE "FATAL EXCEPTION|AndroidRuntime|ReactNativeJS|JavascriptException|ExceptionsManager|UnsatisfiedLinkError|ClassNotFound|NoSuchMethod|com\.renovameter|expo\.modules|Hermes|libhermes|SoLoader" full-logcat.txt | head -200 || true
-            echo "==================== END EXCERPT ===================="
-
-      - name: Upload full logcat
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: crash-logcat
-          path: full-logcat.txt
+          APK=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          echo "APK: $APK"
+          rm -rf /tmp/apkx && mkdir -p /tmp/apkx
+          unzip -o -q "$APK" 'lib/arm64-v8a/*' -d /tmp/apkx || true
+          echo "==================== ALIGNMENT REPORT ===================="
+          bad=0
+          for f in /tmp/apkx/lib/arm64-v8a/*.so; do
+            [ -e "$f" ] || continue
+            # Alignment of the first LOAD segment (0x4000 = 16 KB, 0x1000 = 4 KB)
+            align=$(readelf -lW "$f" 2>/dev/null | awk '/LOAD/{print $NF; exit}')
+            name=$(basename "$f")
+            if [ "$align" = "0x4000" ] || [ "$align" = "0x10000" ]; then
+              echo "OK    $name  align=$align"
+            else
+              echo "NOT16 $name  align=$align"
+              bad=$((bad+1))
+            fi
+          done
+          echo "========================================================="
+          echo "Also checking zip-alignment (page alignment inside the APK):"
+          ${ANDROID_HOME}/build-tools/35.0.0/zipalign -c -P 16 -v 4 "$APK" 2>/dev/null | grep -iE "arm64|Verification" | tail -40 || echo "(zipalign -P check not available)"
+          echo "Total NOT-16KB-aligned arm64 libs: $bad"
