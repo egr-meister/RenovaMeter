@@ -67,14 +67,8 @@ jobs:
             sleep 25
             adb logcat -d > full-logcat.txt || true
             echo "==================== VERDICT ===================="
-            PID=$(adb shell pidof com.renovameter.app | tr -d '\r')
-            if [ -n "$PID" ]; then
-              echo "RESULT: PASS - app process is ALIVE (pid $PID) 25s after launch."
-            else
-              echo "RESULT: FAIL - app process is NOT running (it crashed)."
-            fi
-            echo "--- crash / missing-module lines (should be empty if fixed) ---"
-            grep -iE "Cannot find native module|FATAL|JavascriptException|libc.*SIGABRT|ReactNativeJS.*Error" full-logcat.txt | head -40 || true
+            PID=$(adb shell pidof com.renovameter.app | tr -d '\r'); if [ -n "$PID" ]; then echo "RESULT: PASS - app process ALIVE (pid $PID) 25s after launch."; else echo "RESULT: FAIL - app process NOT running (crashed)."; fi
+            echo "--- crash / missing-module lines (empty == fixed) ---"; grep -iE "Cannot find native module|FATAL|JavascriptException|SIGABRT|ReactNativeJS.*Error" full-logcat.txt | head -40 || echo "(none found)"
             echo "================================================"
 
       - name: Upload full logcat
