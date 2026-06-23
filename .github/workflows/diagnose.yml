@@ -1,14 +1,14 @@
 name: Diagnose Crash
 
-# Builds the release APK and runs it on an arm64 emulator (matching the user's
-# device architecture) to reproduce the crash and capture logcat. Run manually.
+# Builds the release APK, launches it on an emulator, and verifies the app
+# stays alive (no "Cannot find native module" / FATAL crash). Run manually.
 on:
   workflow_dispatch:
 
 jobs:
   diagnose:
-    name: Reproduce crash on arm64 emulator
-    runs-on: ubuntu-24.04-arm
+    name: Verify app launches
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
@@ -53,11 +53,11 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run app on arm64 emulator and capture logcat
+      - name: Launch app and verify it stays alive
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
-          arch: arm64-v8a
+          api-level: 34
+          arch: x86_64
           target: google_apis
           disable-animations: true
           script: |
@@ -66,13 +66,20 @@ jobs:
             adb shell monkey -p com.renovameter.app -c android.intent.category.LAUNCHER 1 || true
             sleep 25
             adb logcat -d > full-logcat.txt || true
-            echo "==================== CRASH EXCERPT ===================="
-            grep -nA 40 -iE "FATAL EXCEPTION|AndroidRuntime.*com.renovameter|ReactNativeJS|JavascriptException|ExceptionsManager|UnsatisfiedLinkError" full-logcat.txt | head -250 || true
-            echo "==================== END EXCERPT ===================="
+            echo "==================== VERDICT ===================="
+            PID=$(adb shell pidof com.renovameter.app | tr -d '\r')
+            if [ -n "$PID" ]; then
+              echo "RESULT: PASS - app process is ALIVE (pid $PID) 25s after launch."
+            else
+              echo "RESULT: FAIL - app process is NOT running (it crashed)."
+            fi
+            echo "--- crash / missing-module lines (should be empty if fixed) ---"
+            grep -iE "Cannot find native module|FATAL|JavascriptException|libc.*SIGABRT|ReactNativeJS.*Error" full-logcat.txt | head -40 || true
+            echo "================================================"
 
       - name: Upload full logcat
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: crash-logcat-arm64
+          name: verify-logcat
           path: full-logcat.txt
