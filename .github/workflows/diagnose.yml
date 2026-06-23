@@ -1,14 +1,14 @@
 name: Diagnose Crash
 
-# Builds the release APK and checks whether its arm64 native libraries are
-# 16 KB page aligned (the likely cause of the on-device crash). Run manually.
+# Builds the release APK and runs it on an arm64 emulator (matching the user's
+# device architecture) to reproduce the crash and capture logcat. Run manually.
 on:
   workflow_dispatch:
 
 jobs:
   diagnose:
-    name: Check native lib alignment
-    runs-on: ubuntu-latest
+    name: Reproduce crash on arm64 emulator
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout repository
@@ -47,27 +47,32 @@ jobs:
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon
 
-      - name: Check 16 KB alignment of arm64 native libraries
+      - name: Enable KVM
         run: |
-          APK=$(find android/app/build/outputs/apk/release -name '*.apk' | head -1)
-          echo "APK: $APK"
-          rm -rf /tmp/apkx && mkdir -p /tmp/apkx
-          unzip -o -q "$APK" 'lib/arm64-v8a/*' -d /tmp/apkx || true
-          echo "==================== ALIGNMENT REPORT ===================="
-          bad=0
-          for f in /tmp/apkx/lib/arm64-v8a/*.so; do
-            [ -e "$f" ] || continue
-            # Alignment of the first LOAD segment (0x4000 = 16 KB, 0x1000 = 4 KB)
-            align=$(readelf -lW "$f" 2>/dev/null | awk '/LOAD/{print $NF; exit}')
-            name=$(basename "$f")
-            if [ "$align" = "0x4000" ] || [ "$align" = "0x10000" ]; then
-              echo "OK    $name  align=$align"
-            else
-              echo "NOT16 $name  align=$align"
-              bad=$((bad+1))
-            fi
-          done
-          echo "========================================================="
-          echo "Also checking zip-alignment (page alignment inside the APK):"
-          ${ANDROID_HOME}/build-tools/35.0.0/zipalign -c -P 16 -v 4 "$APK" 2>/dev/null | grep -iE "arm64|Verification" | tail -40 || echo "(zipalign -P check not available)"
-          echo "Total NOT-16KB-aligned arm64 libs: $bad"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run app on arm64 emulator and capture logcat
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: arm64-v8a
+          target: google_apis
+          disable-animations: true
+          script: |
+            adb logcat -c || true
+            adb install -r android/app/build/outputs/apk/release/app-release.apk
+            adb shell monkey -p com.renovameter.app -c android.intent.category.LAUNCHER 1 || true
+            sleep 25
+            adb logcat -d > full-logcat.txt || true
+            echo "==================== CRASH EXCERPT ===================="
+            grep -nA 40 -iE "FATAL EXCEPTION|AndroidRuntime.*com.renovameter|ReactNativeJS|JavascriptException|ExceptionsManager|UnsatisfiedLinkError" full-logcat.txt | head -250 || true
+            echo "==================== END EXCERPT ===================="
+
+      - name: Upload full logcat
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-logcat-arm64
+          path: full-logcat.txt
